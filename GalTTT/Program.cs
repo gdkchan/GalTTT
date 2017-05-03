@@ -1,5 +1,4 @@
 ﻿using System;
-using System.IO;
 
 namespace GalTTT
 {
@@ -10,7 +9,7 @@ namespace GalTTT
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("GalTTT - Galerians TIM Texture Tool");
             Console.WriteLine("Made by gdkchan");
-            Console.WriteLine("Version 1.0\n");
+            Console.WriteLine("Version 1.1\n");
             Console.ResetColor();
 
             if (args.Length != 3 && args.Length != 2)

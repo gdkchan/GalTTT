@@ -38,7 +38,7 @@ namespace GalTTT
 
                 while (Input.Position < EndPosition)
                 {
-                    //Reset Dictionary to default values
+                    //Reset Map to default values
                     for (int Position = 0; Position < 0x100; Position++)
                     {
                         Map[Position]         = (byte)Position;
@@ -234,10 +234,9 @@ namespace GalTTT
             Output.Seek(StartPosition + FullLength, SeekOrigin.Begin);
         }
 
-        private static byte[] BuildMap(byte[] Data, int Addr)
+        private static byte[] BuildMap(byte[] Data, int BasePos)
         {
             const int MaxAnalysisLength = 0x1000;
-            const int MaxFullWordLength = 8;
 
             List<ulong> BestMatches = new List<ulong>();
 
@@ -250,56 +249,26 @@ namespace GalTTT
                 Map[Position | 0x100] = 0;
             }
 
-            int Length = Math.Min(Data.Length - Addr, MaxAnalysisLength);
+            int Length = Math.Min(Data.Length - BasePos, MaxAnalysisLength);
 
             //This array is used to keep track of values that are already being used inside this block.
             //Mark those so we store words only on unused spaces.
             for (int Index = 0; Index < Length; Index++)
             {
-                Use[Data[Addr + Index]] = true;
+                Use[Data[BasePos + Index]] = true;
             }
 
             //Finds repeating patterns inside this block.
             //Found patterns are added to the BestMatches list, they can contain repetitions.
-            for (int Index = Addr + 2; Index < Addr + Length; Index++)
+            for (int Index = BasePos; Index < BasePos + Length; Index++)
             {
-                List<ulong> Matches = new List<ulong>();
-
-                int RePos = Addr;
-
-                while ((RePos = Array.IndexOf(Data, Data[Index], RePos)) != -1)
-                {
-                    if (RePos >= Index) break;
-
-                    ulong ReLen = 1;
-
-                    int Dist = Math.Min(Index - RePos, Data.Length - Index);
-
-                    //Compare bytes from current position to the ones at found match position.
-                    //If byte matches we increment the length, otherwise we stop comparing.
-                    for (int Offset = 1; Offset < Dist; Offset++)
-                    {
-                        if (Data[Index + Offset] == Data[RePos + Offset])
-                            ReLen++;
-                        else
-                            break;
-                    }
-
-                    //If only 1 byte is equal to current data, then it is useless to us (no repeating pattern).
-                    //Otherwise we store it with the length at the higher 32 bits (more efficient than creating a struct).
-                    if (ReLen > 1)
-                    {
-                        Matches.Add((uint)RePos | (ReLen << 32));
-                    }
-
-                    RePos += (int)ReLen;
-                }
+                List<ulong> Matches = FindPattern(Data, Index, BasePos + Length);
 
                 if (Matches.Count > 0)
                 {
-                    ulong PosLen = Matches.Max();
+                    ulong MinMatch = Matches.Min();
 
-                    Index += (int)(PosLen >> 32) - 1;
+                    Index += (int)(MinMatch >> 32) - 1;
 
                     /*
                      * Bits  0-31 = Absolute position on Data
@@ -307,7 +276,7 @@ namespace GalTTT
                      * Bits 48-63 = Number of occurrences found (negated)
                      * When sorted in ascending order, occurrences with more matches will be at the beggining.
                      */
-                    BestMatches.Add(PosLen | ((ulong)(Matches.Count ^ 0xffff) << 48));
+                    BestMatches.Add(MinMatch | ((ulong)~Matches.Count << 48));
                 }
             }
 
@@ -323,46 +292,22 @@ namespace GalTTT
                 int EndPos  = Pos + Len;
                 int LastPos = GetOptimalValue(Map, Data, Pos);
 
-                if (Len <= MaxFullWordLength)
-                {
-                    Pos += LastPos >> 8;
-                }
+                Pos += LastPos >> 8;
 
-                int MapPos;
+                int MapPos = 0;
 
-                for (MapPos = 0; MapPos < 0x100 && Pos < EndPos; MapPos++)
+                for (; MapPos < 0x100 && Pos < EndPos; MapPos++)
                 {
                     if (!Use[MapPos])
                     {
-                        int Value0 = GetOptimalValue(Map, Data, Pos);
-                        int Value1 = GetOptimalValue(Map, Data, Pos + (Value0 >> 8));
+                        int Value = GetOptimalValue(Map, Data, Pos);
 
-                        /*
-                         * When the block is too big, it's better to store it in
-                         * groups of two instead of creating a complete chain, this way
-                         * the smaller groups can be re-used to form bigger ones, and is
-                         * usually more efficient since the larget the data is, it's more unlikely
-                         * that it will repeat again inside the file.
-                         * TODO: Ideally, develop a smart algorithm that detects the best place to break the chain.
-                         */
-                        if (Len > MaxFullWordLength)
-                        {
-                            Map[MapPos] = (byte)Value1;
+                        Map[MapPos]         = (byte)LastPos;
+                        Map[MapPos | 0x100] = (byte)Value;
 
-                            Pos += (Value0 >> 8) + (Value1 >> 8);
-                        }
-                        else
-                        {
-                            Map[MapPos] = (byte)LastPos;
+                        Pos += Value >> 8;
 
-                            Pos += Value0 >> 8;
-                        }
-
-                        Map[MapPos | 0x100] = (byte)Value0;
-
-                        LastPos = MapPos;
-
-                        Use[MapPos] = true;
+                        Use[LastPos = MapPos] = true;
 
                         MapPos = -1;
                     }
@@ -439,6 +384,36 @@ namespace GalTTT
             }
 
             return Matches.Max();
+        }
+
+        private static List<ulong> FindPattern(byte[] Data, int Index, int Length)
+        {
+            List<ulong> Matches = new List<ulong>();
+
+            int RePos = Index + 1;
+
+            while ((RePos = Array.IndexOf(Data, Data[Index], RePos)) != -1 && RePos < Length)
+            {
+                int ReLen = 1;
+                int Position = Math.Max(Index, RePos);
+
+                for (; Position + ReLen < Length; ReLen++)
+                {
+                    byte IndexVal = Data[Index + ReLen];
+                    byte MatchVal = Data[RePos + ReLen];
+
+                    if (IndexVal != MatchVal) break;
+                }
+
+                if (ReLen > 1)
+                {
+                    Matches.Add((uint)RePos | ((ulong)ReLen << 32));
+                }
+
+                RePos += ReLen;
+            }
+
+            return Matches;
         }
     }
 }
